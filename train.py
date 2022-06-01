@@ -5,9 +5,11 @@ from enum import Enum, unique
 import numpy as np
 import matplotlib.pyplot as plt
 
+import tensorflow as tf
 import tensorflow.keras
 from tensorflow.keras.applications import VGG16
 from tensorflow.keras.optimizers import SGD
+from tensorflow.keras import layers
 from tensorflow.keras.losses import categorical_crossentropy
 from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, TerminateOnNaN
 
@@ -146,6 +148,25 @@ def random_flip_augmentation(
             input_sample = np.flip(input_sample, axis=ax)
     return input_sample
 
+def training_augmentation(
+    input_sample: np.ndarray
+) -> np.ndarray:
+    #Convert to Tensor
+    sample = tf.convert_to_tensor(input_sample, dtype=tf.float64)
+
+    #Augmentation methods
+    sample = random_shear(sample, 50, row_axis=0, col_axis=1, channel_axis=2)
+
+    training_augmentation = tf.keras.Sequential([
+        layers.RandomBrightness(factor=0.3)
+        layers.RandomRotation(factor=(0, 360), fill_mode="constant")
+    ])
+
+    training_augmentation(sample)
+
+    #Convert back to numpy array
+    return sample.numpy()
+
 
 def shared_preprocess_fn(input_batch: np.ndarray) -> np.ndarray:
     """Preprocessing that is used by both the training and validation sets during training
@@ -164,6 +185,7 @@ def train_preprocess_fn(input_batch: np.ndarray) -> np.ndarray:
     output_batch = []
     for sample in input_batch:
         sample = random_flip_augmentation(sample, axis=(1, 2))
+        sample = training_augmentation(sample)
         output_batch.append(sample)
 
     return np.array(output_batch)
@@ -189,17 +211,38 @@ validation_data_generator = UndersamplingIterator(
     batch_size=batch_size,
 )
 
+def get_model(width=128, height=128, depth=64):
+    """Build a 3D convolutional neural network model."""
 
-# We use the VGG16 model
-model = VGG16(
-    include_top=True,
-    weights=None,
-    input_tensor=None,
-    input_shape=None,
-    pooling=None,
-    classes=num_classes,
-    classifier_activation="softmax",
-)
+    inputs = keras.Input((width, height, depth, 1))
+
+    x = layers.Conv3D(filters=64, kernel_size=3, activation="relu")(inputs)
+    x = layers.MaxPool3D(pool_size=2)(x)
+    x = layers.BatchNormalization()(x)
+
+    x = layers.Conv3D(filters=64, kernel_size=3, activation="relu")(x)
+    x = layers.MaxPool3D(pool_size=2)(x)
+    x = layers.BatchNormalization()(x)
+
+    x = layers.Conv3D(filters=128, kernel_size=3, activation="relu")(x)
+    x = layers.MaxPool3D(pool_size=2)(x)
+    x = layers.BatchNormalization()(x)
+
+    x = layers.Conv3D(filters=256, kernel_size=3, activation="relu")(x)
+    x = layers.MaxPool3D(pool_size=2)(x)
+    x = layers.BatchNormalization()(x)
+
+    x = layers.GlobalAveragePooling3D()(x)
+    x = layers.Dense(units=512, activation="relu")(x)
+    x = layers.Dropout(0.3)(x)
+
+    outputs = layers.Dense(units=1, activation="sigmoid")(x)
+
+    # Define the model.
+    model = keras.Model(inputs, outputs, name="3dcnn")
+    return model
+
+model = get_model(width=128, height=128, depth=64)
 
 # Show the model layers
 print(model.summary())
@@ -207,7 +250,7 @@ print(model.summary())
 # Load the pretrained imagenet VGG model weights except for the last layer
 # Because the pretrained weights will have a data size mismatch in the last layer of our model
 # two warnings will be raised, but these can be safely ignored.
-model.load_weights(str(PRETRAINED_VGG16_WEIGHTS_FILE), by_name=True, skip_mismatch=True)
+#model.load_weights(str(PRETRAINED_VGG16_WEIGHTS_FILE), by_name=True, skip_mismatch=True)
 
 # Prepare model for training by defining the loss, optimizer, and metrics to use
 # Output labels and predictions are one-hot encoded, so we use the categorical_accuracy metric
@@ -219,7 +262,7 @@ model.compile(
 
 # Start actual training process
 output_model_file = (
-    TRAINING_OUTPUT_DIRECTORY / f"vgg16_{problem.value}_best_val_accuracy.h5"
+    TRAINING_OUTPUT_DIRECTORY / f"3dcnn_{problem.value}_best_val_accuracy.h5"
 )
 callbacks = [
     TerminateOnNaN(),
@@ -254,7 +297,7 @@ history = model.fit(
 
 # generate a plot using the training history...
 output_history_img_file = (
-    TRAINING_OUTPUT_DIRECTORY / f"vgg16_{problem.value}_train_plot.png"
+    TRAINING_OUTPUT_DIRECTORY / f"3dcnn_{problem.value}_train_plot.png"
 )
 print(f"Saving training plot to: {output_history_img_file}")
 plt.plot(history.history["categorical_accuracy"])
