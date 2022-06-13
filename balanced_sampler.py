@@ -28,7 +28,7 @@ def sample_balanced(
     assert input_labels.ndim == 1
     # split input_labels
     classes, indices = np.unique(input_labels, return_index=True)
-    classes = list(map(int, classes))
+    classes = list(map(int, classes)
     class_balance = _sanitize_class_balance(
         classes=classes, class_balance=class_balance
     )
@@ -41,6 +41,7 @@ def sample_balanced(
     indices_per_class = {
         c: index_dict[c][: int(class_balance[c] * required_samples)] for c in classes
     }
+    
     assert np.sum(list(map(len, indices_per_class.values()))) == required_samples
     return indices_per_class
 
@@ -61,7 +62,6 @@ def sample_balanced_batches(
         shuffle=shuffle,
     )
     classes = list(indices_per_class.keys())
-
     samples_per_batch = {c: int(class_balance[c] * batch_size) for c in classes}
     assert np.sum(list(samples_per_batch.values())) == batch_size
 
@@ -145,6 +145,7 @@ class UndersamplingIterator(Iterator):
         """
         indices = self._sampled_batch_indices[index]
         X, y = self._inputs[indices, :], self._labels[indices, :]
+        
         if self._preprocess_fn is not None:
             X = self._preprocess_fn(X)
         return X, y

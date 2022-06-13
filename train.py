@@ -2,21 +2,45 @@ from pathlib import Path
 from typing import Tuple
 from enum import Enum, unique
 
+import os
 import numpy as np
 import matplotlib.pyplot as plt
 
 import tensorflow as tf
 import tensorflow.keras
+#import tensorflow_addons as tfa
+import random
+import imgaug
+
+from tensorflow import keras
 from tensorflow.keras.applications import VGG16
+from tensorflow.keras.layers import Reshape
 from tensorflow.keras.optimizers import SGD
+from tensorflow.keras.optimizers import Adam
 from tensorflow.keras import layers
 from tensorflow.keras.losses import categorical_crossentropy
-from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, TerminateOnNaN
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, TerminateOnNaN, LambdaCallback
+from tensorflow.keras import initializers
+from albumentations import Compose, HueSaturationValue, RandomContrast, Rotate, HorizontalFlip, ElasticTransform, RandomBrightness, GaussNoise, VerticalFlip, GridDistortion, MotionBlur, Blur, Transpose
+
+from classification_models_3D.tfkeras import Classifiers
+
+# Set random seeds for all randomizers to make sure the output is exactly similar for each training run
+random_seed = 123
+os.environ['PYTHONHASHSEED']=str(random_seed)
+np.random.seed(random_seed)
+tf.random.set_seed(random_seed)
+random.seed(random_seed)
+imgaug.random.seed(random_seed)
+
+# Initiate session to avoid randomness of the GPU
+session_conf = tf.compat.v1.ConfigProto(intra_op_parallelism_threads=1, inter_op_parallelism_threads=1)
+sess = tf.compat.v1.Session(graph=tf.compat.v1.get_default_graph(), config=session_conf)
+tf.compat.v1.keras.backend.set_session(sess)
 
 from balanced_sampler import sample_balanced, UndersamplingIterator
 from data import load_dataset
 from utils import maybe_download_vgg16_pretrained_weights
-
 
 # Enforce some Keras backend settings that we need
 tensorflow.keras.backend.set_image_data_format("channels_first")
@@ -32,24 +56,13 @@ GENERATED_DATA_DIRECTORY = Path().absolute()
 # This should point at a directory to store the training output files
 TRAINING_OUTPUT_DIRECTORY = Path().absolute()
 
-# This should point at the pretrained model weights file for the VGG16 model.
-# The file can be downloaded here:
-# https://storage.googleapis.com/tensorflow/keras-applications/vgg16/vgg16_weights_tf_dim_ordering_tf_kernels.h5
-PRETRAINED_VGG16_WEIGHTS_FILE = (
-    Path().absolute()
-    / "pretrained_weights"
-    / "vgg16_weights_tf_dim_ordering_tf_kernels.h5"
-)
-maybe_download_vgg16_pretrained_weights(PRETRAINED_VGG16_WEIGHTS_FILE)
-
-
 # Load dataset
 # This method will generate a preprocessed dataset from the source data if it is not present (only needs to be done once)
 # Otherwise it will quickly load the generated dataset from disk
 full_dataset = load_dataset(
-    input_size=224,
-    new_spacing_mm=0.2,
-    cross_slices_only=True,
+    input_size=64,
+    new_spacing_mm=1,
+    cross_slices_only=False,
     generate_if_not_present=True,
     always_generate=False,
     source_data_dir=DATA_DIRECTORY,
@@ -65,7 +78,7 @@ class MLProblem(Enum):
 
 
 # Here you can switch the machine learning problem to solve
-problem = MLProblem.malignancy_prediction
+problem = MLProblem.nodule_type_prediction
 
 # Configure problem specific parameters
 if problem == MLProblem.malignancy_prediction:
@@ -82,7 +95,7 @@ elif problem == MLProblem.nodule_type_prediction:
     # We made this problem a multiclass classification problem with three classes:
     # 0 - non-solid, 1 - part-solid, 2 - solid
     num_classes = 3
-    batch_size = 30  # make this a factor of three to fit three classes evenly per batch during training
+    batch_size =  30 # make this a factor of three to fit three classes evenly per batch during training
     # This dataset has only few part-solid nodules in the dataset, so we make a tiny validation set
     num_validation_samples = batch_size * 2
     labels = full_dataset["labels_nodule_type"]
@@ -99,7 +112,7 @@ print(
 validation_indices = sample_balanced(
     input_labels=np.argmax(labels, axis=1),
     required_samples=num_validation_samples,
-    class_balance=None,  # By default sample with equal probability, e.g. for two classes : {0: 0.5, 1: 0.5}
+    class_balance={0: 0.33, 1: 0.33, 2:0.33},  # By default sample with equal probability, e.g. for two classes : {0: 0.5, 1: 0.5}
     shuffle=True,
 )
 validation_mask = np.isin(np.arange(len(labels)), list(validation_indices.values()))
@@ -148,24 +161,30 @@ def random_flip_augmentation(
             input_sample = np.flip(input_sample, axis=ax)
     return input_sample
 
+def alt_random_rotate(input_sample: np.ndarray):
+    input_sample = np.rot90(input_sample, k=np.random.randint(0, 3), axes=(0, 1))
+    input_sample = np.rot90(input_sample, k=np.random.randint(0, 3), axes=(0, 2))
+    input_sample = np.rot90(input_sample, k=np.random.randint(0, 3), axes=(2, 1))
+    return input_sample
+
+
 def training_augmentation(
     input_sample: np.ndarray
 ) -> np.ndarray:
-    #Convert to Tensor
-    sample = tf.convert_to_tensor(input_sample, dtype=tf.float64)
 
-    #Augmentation methods
-    sample = random_shear(sample, 50, row_axis=0, col_axis=1, channel_axis=2)
-
-    training_augmentation = tf.keras.Sequential([
-        layers.RandomBrightness(factor=0.3)
-        layers.RandomRotation(factor=(0, 360), fill_mode="constant")
-    ])
-
-    training_augmentation(sample)
-
-    #Convert back to numpy array
-    return sample.numpy()
+    transform = Compose([
+        ElasticTransform(p=0.5),
+        #GaussNoise(p=0.5),
+        #RandomContrast(p=0.5),
+        RandomBrightness(p=0.5),
+        GridDistortion(p=0.5),
+        #HorizontalFlip(p=0.5),
+        #VerticalFlip(p=0.5),
+        #MotionBlur(blur_limit=5, p=0.5),
+        #Blur(blur_limit=5, p=0.5),
+        Transpose(p=0.5)
+])
+    return transform(image=input_sample)['image']
 
 
 def shared_preprocess_fn(input_batch: np.ndarray) -> np.ndarray:
@@ -175,7 +194,7 @@ def shared_preprocess_fn(input_batch: np.ndarray) -> np.ndarray:
     :return: np.ndarray preprocessed batch
     """
     input_batch = clip_and_scale(input_batch, min_value=-1000.0, max_value=400.0)
-    # Can add more preprocessing here...
+    input_batch = np.reshape(input_batch, (batch_size, 1, 64, 64, 64))
     return input_batch
 
 
@@ -185,7 +204,7 @@ def train_preprocess_fn(input_batch: np.ndarray) -> np.ndarray:
     output_batch = []
     for sample in input_batch:
         sample = random_flip_augmentation(sample, axis=(1, 2))
-        sample = training_augmentation(sample)
+        #sample = training_augmentation(sample)
         output_batch.append(sample)
 
     return np.array(output_batch)
@@ -200,69 +219,175 @@ training_data_generator = UndersamplingIterator(
     training_inputs,
     training_labels,
     shuffle=True,
+    class_balance={0:0.3, 1:0.1, 2:0.6},
     preprocess_fn=train_preprocess_fn,
     batch_size=batch_size,
 )
 validation_data_generator = UndersamplingIterator(
     validation_inputs,
     validation_labels,
-    shuffle=False,
+    shuffle=True,
     preprocess_fn=validation_preprocess_fn,
     batch_size=batch_size,
 )
 
-def get_model(width=128, height=128, depth=64):
+def get_malignancy_detection_model(width=64, height=64, depth=64):
     """Build a 3D convolutional neural network model."""
+    initializer = initializers.glorot_uniform(seed = random_seed)
+    inputs = keras.Input((width, height, depth))
+    x = layers.Reshape(target_shape=(1,  width, height, depth))(inputs)
 
-    inputs = keras.Input((width, height, depth, 1))
+    x = layers.Conv3D(filters=64, kernel_size=3, padding = "same",  activation= LeakyReLU(), kernel_regularizer = l2(l = 0.001))(x)
+    x = layers.BatchNormalization()(x)
 
-    x = layers.Conv3D(filters=64, kernel_size=3, activation="relu")(inputs)
+    x = layers.Conv3D(filters=64, kernel_size=3, padding = "same",  activation= LeakyReLU(), kernel_regularizer = l2(l = 0.01))(x)
     x = layers.MaxPool3D(pool_size=2)(x)
     x = layers.BatchNormalization()(x)
 
-    x = layers.Conv3D(filters=64, kernel_size=3, activation="relu")(x)
+    x = layers.Conv3D(filters=128, kernel_size=3, padding = "same",  activation= LeakyReLU(), kernel_regularizer = l2(l = 0.01))(x)
+    x = layers.BatchNormalization()(x)
+
+    x = layers.Conv3D(filters=128, kernel_size=3, padding = "same", activation= LeakyReLU(), kernel_regularizer = l2(l = 0.01))(x)
     x = layers.MaxPool3D(pool_size=2)(x)
     x = layers.BatchNormalization()(x)
 
-    x = layers.Conv3D(filters=128, kernel_size=3, activation="relu")(x)
+    x = layers.Conv3D(filters=256, kernel_size=3, padding = "same",  activation= LeakyReLU(), kernel_regularizer = l2(l = 0.01))(x)
+    x = layers.MaxPool3D(pool_size=2)(x)
+    x = layers.BatchNormalization()(x)
+    res_block_1_x = layers.Dropout(0.1)(x)
+
+    x = layers.Conv3D(filters=256, kernel_size=3, padding = "same", activation= LeakyReLU(), kernel_regularizer = l2(l = 0.01))(res_block_1_x)
+    x = layers.BatchNormalization()(x)
+
+    x = layers.Conv3D(filters=256, kernel_size=3, padding = "same",  activation= LeakyReLU(), kernel_regularizer = l2(l = 0.001))(x)
+    x = layers.BatchNormalization()(x)
+
+    x = layers.Add()([res_block_1_x, x])
+    x = layers.ReLU()(x)
+    x = layers.BatchNormalization()(x)
+
+    x = layers.Conv3D(filters=256, kernel_size=3, padding = "same",  activation= LeakyReLU(), kernel_regularizer = l2(l = 0.001))(x)
     x = layers.MaxPool3D(pool_size=2)(x)
     x = layers.BatchNormalization()(x)
 
-    x = layers.Conv3D(filters=256, kernel_size=3, activation="relu")(x)
+    x = layers.Conv3D(filters=512, kernel_size=3, padding = "same", activation= LeakyReLU(), kernel_regularizer = l2(l = 0.001))(x)
+    x = layers.BatchNormalization()(x)
+
+    x = layers.Conv3D(filters=512, kernel_size=3, padding = "same", activation= LeakyReLU(),kernel_regularizer = l2(l = 0.001 ))(x)
+    x = layers.BatchNormalization()(x)
+
+    x = layers.Conv3D(filters=512, kernel_size=3, padding = "same",  activation= LeakyReLU(), kernel_regularizer = l2(l = 0.001))(x)
     x = layers.MaxPool3D(pool_size=2)(x)
     x = layers.BatchNormalization()(x)
 
     x = layers.GlobalAveragePooling3D()(x)
-    x = layers.Dense(units=512, activation="relu")(x)
+    x = layers.Dense(units=256,  activation= LeakyReLU())(x)
+    x = layers.Dropout(0.4)(x)
+    x = layers.Dense(units=128,  activation= LeakyReLU())(x)
     x = layers.Dropout(0.3)(x)
+    x = layers.Dense(units=64,  activation= LeakyReLU())(x)
+    x = layers.Dropout(0.2)(x)
+    x = layers.Flatten()(x)
 
-    outputs = layers.Dense(units=1, activation="sigmoid")(x)
+    outputs = layers.Dense(units=2,  activation="sigmoid")(x)
 
     # Define the model.
     model = keras.Model(inputs, outputs, name="3dcnn")
     return model
 
-model = get_model(width=128, height=128, depth=64)
+
+def get_nodule_type_model(width=64, height=64, depth=64):
+    """Build a 3D convolutional neural network model."""
+    initializer = initializers.glorot_uniform(seed = random_seed)
+    inputs = keras.Input((width, height, depth))
+    x = layers.Reshape(target_shape=(1, width, height, depth))(inputs)
+
+    x = layers.Conv3D(filters=64, kernel_size=3, padding = "same", kernel_initializer = initializer, activation="relu")(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(0.2)(x)
+
+    x = layers.Conv3D(filters=64, kernel_size=3, padding = "same", kernel_initializer = initializer, activation="relu")(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(0.2)(x)
+
+    x = layers.Conv3D(filters=64, kernel_size=3, padding = "same", kernel_initializer = initializer, activation="relu")(x)
+    x = layers.MaxPool3D(pool_size=2)(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(0.2)(x)
+
+    x = layers.Conv3D(filters=128, kernel_size=3, padding = "same", kernel_initializer = initializer, activation="relu")(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(0.2)(x)
+
+    x = layers.Conv3D(filters=128, kernel_size=3, padding = "same", kernel_initializer = initializer, activation="relu")(x)
+    x = layers.MaxPool3D(pool_size=2)(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(0.2)(x)
+
+    x = layers.Conv3D(filters=256, kernel_size=3, padding = "same", kernel_initializer = initializer, activation="relu")(x)
+    x = layers.BatchNormalization()(x)
+    res_block_1_x = layers.Dropout(0.5)(x)
+
+    x = layers.Conv3D(filters=256, kernel_size=3, padding = "same", kernel_initializer = initializer, activation="relu")(res_block_1_x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(0.2)(x)
+
+    x = layers.Conv3D(filters=256, kernel_size=3, padding = "same", kernel_initializer = initializer, activation="relu")(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(0.2)(x)
+
+    x = layers.Add()([res_block_1_x, x])
+    x = layers.ReLU()(x)
+    x = layers.BatchNormalization()(x)
+
+    x = layers.Conv3D(filters=256, kernel_size=3, padding = "same", kernel_initializer = initializer, activation="relu")(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(0.2)(x)
+
+    x = layers.Conv3D(filters=512, kernel_size=3, padding = "same", kernel_initializer = initializer, activation="relu")(x)
+    x = layers.MaxPool3D(pool_size=2)(x)
+    x = layers.Dropout(0.2)(x)
+
+    x = layers.Conv3D(filters=512, kernel_size=3, padding = "same", kernel_initializer = initializer, activation="relu")(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(0.2)(x)
+
+    x = layers.Conv3D(filters=512, kernel_size=3, padding = "same", kernel_initializer = initializer, activation="relu")(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(0.2)(x)
+
+    x = layers.GlobalAveragePooling3D()(x)
+    x = layers.Flatten()(x)
+
+    outputs = layers.Dense(units=3, kernel_initializer = initializer, activation="softmax")(x)
+
+    # Define the model.
+    model = keras.Model(inputs, outputs, name="3dcnn")
+    return model
+
+
+if problem == MLProblem.malignancy_prediction:
+    model = get_malignancy_detection_model(width=64, height=64, depth=64)
+elif problem == MLProblem.nodule_type_prediction:
+    model = get_nodule_type_model(width=64, height=64, depth=64)
+    
 
 # Show the model layers
 print(model.summary())
 
-# Load the pretrained imagenet VGG model weights except for the last layer
-# Because the pretrained weights will have a data size mismatch in the last layer of our model
-# two warnings will be raised, but these can be safely ignored.
-#model.load_weights(str(PRETRAINED_VGG16_WEIGHTS_FILE), by_name=True, skip_mismatch=True)
-
 # Prepare model for training by defining the loss, optimizer, and metrics to use
 # Output labels and predictions are one-hot encoded, so we use the categorical_accuracy metric
 model.compile(
-    optimizer=SGD(learning_rate=0.0001, momentum=0.8, nesterov=True),
+    #optimizer=SGD(learning_rate=0.0001, momentum=0.8, nesterov=True),
+    optimizer=Adam(learning_rate=0.00001),
     loss=categorical_crossentropy,
+    #loss=tfa.losses.SigmoidFocalCrossEntropy(alpha=0.2, gamma=2.0),
     metrics=["categorical_accuracy"],
 )
 
 # Start actual training process
 output_model_file = (
-    TRAINING_OUTPUT_DIRECTORY / f"3dcnn_{problem.value}_best_val_accuracy.h5"
+    TRAINING_OUTPUT_DIRECTORY / f"3dcnn_v50.6_{problem.value}_best_val_accuracy.h5"
 )
 callbacks = [
     TerminateOnNaN(),
@@ -289,7 +414,8 @@ history = model.fit(
     validation_data=validation_data_generator,
     validation_steps=None,
     validation_freq=1,
-    epochs=250,
+    class_weight={0: 1., 1: 1., 2:1.},
+    epochs=500,
     callbacks=callbacks,
     verbose=2,
 )
@@ -297,7 +423,7 @@ history = model.fit(
 
 # generate a plot using the training history...
 output_history_img_file = (
-    TRAINING_OUTPUT_DIRECTORY / f"3dcnn_{problem.value}_train_plot.png"
+    TRAINING_OUTPUT_DIRECTORY / f"3dcnn_v50.6_{problem.value}_train_plot.png"
 )
 print(f"Saving training plot to: {output_history_img_file}")
 plt.plot(history.history["categorical_accuracy"])

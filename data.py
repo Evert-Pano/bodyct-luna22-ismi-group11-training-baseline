@@ -132,9 +132,9 @@ def _load_nodule_information(file_name: Path) -> List[Dict[str, Any]]:
 
 
 def _generate_training_dataset(
-    input_size: int = 224,
-    new_spacing_mm: float = 0.2,
-    cross_slices_only: bool = True,
+    input_size: int = 64,
+    new_spacing_mm: float = 1,
+    cross_slices_only: bool = False,
     data_dir: Path = Path().absolute(),
 ) -> DATASET_TYPE:
     nodule_info = _load_nodule_information(file_name=data_dir / "LIDC-IDRI_1176.npy")
@@ -200,9 +200,9 @@ def _generate_training_dataset(
 
 
 def load_dataset(
-    input_size: int = 224,
-    new_spacing_mm: float = 0.2,
-    cross_slices_only: bool = True,
+    input_size: int = 64,
+    new_spacing_mm: float = 1,
+    cross_slices_only: bool = False,
     generated_data_dir: Path = Path().absolute(),
     source_data_dir: Path = Path().absolute(),
     generate_if_not_present: bool = True,
